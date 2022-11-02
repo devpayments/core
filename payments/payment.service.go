@@ -5,26 +5,44 @@ import (
 	"errors"
 	"fmt"
 	"github.com/devpayments/common/entity"
-	"github.com/devpayments/core/datastore"
-	"github.com/devpayments/core/datastore/repository"
+	"github.com/devpayments/core/models"
 	"github.com/google/uuid"
 	"time"
 )
 
-type PaymentService struct {
-	store datastore.Store
+type Repository[M entity.Model[E], E entity.Entity] interface {
+	Create(ctx context.Context, entity *E) (int64, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*E, error)
+	FindOne(ctx context.Context, whereMap map[string]any) (*E, error)
+	FindAll(ctx context.Context, whereMap map[string]any) (*E, error)
 }
 
-func NewPaymentService(store datastore.Store) PaymentService {
+type PaymentsRepository interface {
+	Repository[models.PaymentModel, models.Payment]
+	Update(ctx context.Context, p *models.Payment) (int64, error)
+	GetPaymentTransaction(ctx context.Context, txnType string, paymentId uuid.UUID) (*models.Transaction, error)
+	SetPaymentTransaction(ctx context.Context, paymentId uuid.UUID, transaction *models.Transaction) error
+}
+
+type TransactionsRepository interface {
+	Repository[models.TransactionModel, models.Transaction]
+}
+
+type PaymentService struct {
+	paymentRepository     PaymentsRepository
+	transactionRepository TransactionsRepository
+}
+
+func NewPaymentService(paymentRepository PaymentsRepository, transactionRepository TransactionsRepository) PaymentService {
 	return PaymentService{
-		store: store,
+		transactionRepository: transactionRepository,
+		paymentRepository:     paymentRepository,
 	}
 }
 
-func (ps *PaymentService) Initiate(ctx context.Context) (*repository.Payment, error) {
-
+func (ps *PaymentService) Initiate(ctx context.Context) (*models.Payment, error) {
 	// Initiate payment
-	payment := repository.Payment{
+	payment := models.Payment{
 		ID:        uuid.New().String(),
 		Status:    "initiated",
 		Currency:  entity.Currency("NGN"),
@@ -33,7 +51,7 @@ func (ps *PaymentService) Initiate(ctx context.Context) (*repository.Payment, er
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
-	_, err := ps.store.Payments.Create(ctx, &payment)
+	_, err := ps.paymentRepository.Create(ctx, &payment)
 	if err != nil {
 		panic(err)
 	}
@@ -43,10 +61,10 @@ func (ps *PaymentService) Initiate(ctx context.Context) (*repository.Payment, er
 
 	// Initiate transaction
 	t, err := chargeHandler.InitiateCharge(ctx, 1, payment.Amount, payment.Currency)
-	initiateTransaction := repository.Transaction{
+	initiateTransaction := models.Transaction{
 		ID:                uuid.New().String(),
 		PaymentID:         payment.ID,
-		Currency:          string(t.Currency),
+		Currency:          t.Currency,
 		Amount:            t.Amount,
 		Provider:          chargeHandler.Name(),
 		ProviderReference: t.Reference,
@@ -55,7 +73,7 @@ func (ps *PaymentService) Initiate(ctx context.Context) (*repository.Payment, er
 		CreatedAt:         time.Now(),
 		UpdatedAt:         time.Now(),
 	}
-	err = ps.store.Payments.SetPaymentTransaction(ctx, uuid.MustParse(payment.ID), &initiateTransaction)
+	err = ps.paymentRepository.SetPaymentTransaction(ctx, uuid.MustParse(payment.ID), &initiateTransaction)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +82,7 @@ func (ps *PaymentService) Initiate(ctx context.Context) (*repository.Payment, er
 }
 
 func (ps *PaymentService) GetAuthorization(ctx context.Context, paymentId uuid.UUID) error {
-	sourceTransaction, err := ps.store.Payments.GetPaymentTransaction(ctx, "source", paymentId)
+	sourceTransaction, err := ps.paymentRepository.GetPaymentTransaction(ctx, "source", paymentId)
 	if err != nil {
 		return err
 	}
@@ -80,7 +98,7 @@ func (ps *PaymentService) GetAuthorization(ctx context.Context, paymentId uuid.U
 }
 
 func (ps *PaymentService) CompleteAuthorization(ctx context.Context, paymentId uuid.UUID, authorizationData any) error {
-	sourceTransaction, err := ps.store.Payments.GetPaymentTransaction(ctx, "source", paymentId)
+	sourceTransaction, err := ps.paymentRepository.GetPaymentTransaction(ctx, "source", paymentId)
 	if err != nil {
 		return err
 	}
@@ -92,7 +110,7 @@ func (ps *PaymentService) CompleteAuthorization(ctx context.Context, paymentId u
 }
 
 func (ps *PaymentService) Complete(ctx context.Context, paymentId uuid.UUID) error {
-	sourceTransaction, err := ps.store.Payments.GetPaymentTransaction(ctx, "source", paymentId)
+	sourceTransaction, err := ps.paymentRepository.GetPaymentTransaction(ctx, "source", paymentId)
 	if err != nil {
 		return err
 	}
@@ -110,7 +128,7 @@ func (ps *PaymentService) Complete(ctx context.Context, paymentId uuid.UUID) err
 		return err
 	}
 
-	destinationTransaction := repository.Transaction{
+	destinationTransaction := models.Transaction{
 		ID:        uuid.New().String(),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -119,7 +137,7 @@ func (ps *PaymentService) Complete(ctx context.Context, paymentId uuid.UUID) err
 		PaymentID: paymentId.String(),
 		Status:    t.Status,
 	}
-	err = ps.store.Payments.SetPaymentTransaction(ctx, paymentId, &destinationTransaction)
+	err = ps.paymentRepository.SetPaymentTransaction(ctx, paymentId, &destinationTransaction)
 	if err != nil {
 		return err
 	}

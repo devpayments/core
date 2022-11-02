@@ -5,7 +5,7 @@ go 1.19
 replace github.com/devpayments/common => ../common
 
 require (
-	github.com/devpayments/common v0.0.0-00010101000000-000000000000
+	github.com/devpayments/common v0.0.0-20221101053312-1a187d1b6de1
 	github.com/gofrs/uuid v4.3.0+incompatible
 )
 
